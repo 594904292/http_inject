@@ -131,7 +131,8 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
     struct libnet_ipv4_hdr *ip_header;          // struct ip 도 가능
     struct libnet_tcp_hdr *tcp_header;          // struct tcphdr 도 가능
     struct pseudohdr pseudo_hdr;
-    u_char copy_packet[73];
+    //u_char copy_packet[73];
+    u_char copy_packet[1500];
     u_char *copy_packet_p;
 
     unsigned short etherh_protocoltype;
@@ -139,7 +140,7 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
     uint16_t tcp_data_len;
     int length = pkthdr->len;
 
-    memcpy(copy_packet, packet, 73);    // 61 : "blocked" packet length
+    memcpy(copy_packet, packet, 1500);    // 61 : "blocked" packet length
     copy_packet_p = copy_packet;
     // get ethernet header
     eth_header = (struct libnet_ethernet_hdr *)copy_packet;
@@ -190,10 +191,10 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
                     printf("tcp data len : %d\n", tcp_data_len);
                     printf("tcp_header->th_seq :%x\n", tcp_header->th_seq);
 
-                    tcp_header->th_flags = TH_PUSH | TH_ACK;
-                    //tcp_header->th_flags = TH_FIN | TH_ACK;
+                    int redir_tcp_data_len = strlen("HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n");
+                    tcp_header->th_flags = TH_FIN | TH_ACK;
                     //tcp_header->th_flags = TH_RST;
-                    int iphdr_total_len = sizeof(struct libnet_ipv4_hdr) + tcp_header->th_off*4 + 7;
+                    int iphdr_total_len = sizeof(struct libnet_ipv4_hdr) + tcp_header->th_off*4 + redir_tcp_data_len;
                     ip_header->ip_len = htons(iphdr_total_len);
                     if(menu == 1) {
                         tcp_header->th_seq = htonl(ntohl(tcp_header->th_seq) + tcp_data_len);
@@ -206,7 +207,7 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
                         //pseudo_hdr.ip_p = ip_header->ip_p;
                         //pseudo_hdr.length = htons(sizeof(struct libnet_tcp_hdr));
                         //memcpy(&pseudo_hdr.tcpheader, tcp_header, sizeof(struct libnet_tcp_hdr));
-                    } else if(menu == 2) {
+                    } else if(menu == 2 || menu == 3) {
                         uint8_t  tmp_mac[ETHER_ADDR_LEN];
                         struct in_addr tmp_ip;
                         uint16_t tmp_port;
@@ -230,15 +231,17 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
                     pseudo_hdr.length = htons(sizeof(struct libnet_tcp_hdr));
                     memcpy(&pseudo_hdr.tcpheader, tcp_header, sizeof(struct libnet_tcp_hdr));
 
+
                     // calculate TCP checksum
                     tcp_header->th_sum = tcp_checksum((unsigned short *)&pseudo_hdr, sizeof(struct pseudohdr) / sizeof(unsigned short));
-                    memcpy(copy_packet_p, "blocked", strlen("blocked"));
+                    if(menu == 2) {
+                        memcpy(copy_packet_p, "blocked", strlen("blocked"));
+                    } else if(menu == 3) {
+                        memcpy(copy_packet_p, "HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n", strlen("HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n"));
+                    }
                     copy_packet_p = copy_packet_p - sizeof(struct libnet_ethernet_hdr) - sizeof(struct libnet_ipv4_hdr) - (tcp_header->th_off*4);
-                    print_data(copy_packet_p, 73);
-                    if (pcap_sendpacket((pcap_t *)pcd, copy_packet_p, 73) != 0)
-                    { fprintf(stderr,"\nError sending the packet(VtoG): %s\n", pcap_geterr((pcap_t *)pcd));}
-                    tcp_header->th_flags = TH_FIN | TH_ACK;
-                    if (pcap_sendpacket((pcap_t *)pcd, copy_packet_p, 73) != 0)
+                    print_data(copy_packet_p, iphdr_total_len+14);
+                    if (pcap_sendpacket((pcap_t *)pcd, copy_packet_p, iphdr_total_len+14) != 0)
                     { fprintf(stderr,"\nError sending the packet(VtoG): %s\n", pcap_geterr((pcap_t *)pcd));}
                 }
             }
