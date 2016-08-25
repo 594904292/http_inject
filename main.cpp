@@ -227,7 +227,7 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
                         tcp_header->th_sport = tcp_header->th_dport;
                         tcp_header->th_dport = tmp_port;
                         tmp_seq = tcp_header->th_seq;
-                        tcp_header->th_seq = tcp_header->th_ack+1;
+                        tcp_header->th_seq = tcp_header->th_ack;
                         tcp_header->th_ack = htonl(ntohl(tmp_seq) + tcp_data_len);
                     }
                     pseudo_hdr.ip_src.s_addr = ip_header->ip_src.s_addr;
