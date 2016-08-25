@@ -24,72 +24,7 @@ struct ip *iph;
 // TCP 헤더 구조체
 struct tcphdr *tcph;
 
-// Pseudo 헤더 구조체
-struct pseudohdr
-{
-    struct in_addr ip_src, ip_dst; /* source and dest address */
-    unsigned char reserved;
-    uint8_t ip_p;                   /* protocol */
-    unsigned short length;
-    struct tcphdr tcpheader;
-}__attribute__((packed));
-
 int menu=0;
-
-char *get_protocol_str(u_int8_t protocol) {
-    char* protocol_type_str;
-
-    switch(protocol) {
-    case IPPROTO_ICMP:
-        protocol_type_str = "ICMP";
-        break;
-    case IPPROTO_IGMP:
-        protocol_type_str = "IGMP";
-        break;
-    case IPPROTO_TCP:
-        protocol_type_str = "TCP";
-        break;
-    case IPPROTO_UDP:
-        protocol_type_str = "UDP";
-        break;
-    default:
-        protocol_type_str = "UNKNOWN";
-        break;
-    }
-
-    return protocol_type_str;
-}
-
-char *get_tcp_flag_str(u_int8_t tcp_flags) {
-    char *flags[9] = {"FIN","SYN","RST","PUSH","ACK","URG","ECE","CWR"};
-    int flag_no[8] = {0,};
-    static char tcp_flags_str[64]="";
-    char tmp[10]="";
-    int len;
-
-    if(tcp_flags & TH_FIN) flag_no[0] = 1;
-    if(tcp_flags & TH_SYN) flag_no[1] = 1;
-    if(tcp_flags & TH_RST) flag_no[2] = 1;
-    if(tcp_flags & TH_PUSH) flag_no[3] = 1;
-    if(tcp_flags & TH_ACK) flag_no[4] = 1;
-    if(tcp_flags & TH_URG) flag_no[5] = 1;
-    if(tcp_flags & TH_ECE) flag_no[6] = 1;
-    if(tcp_flags & TH_CWR) flag_no[7] = 1;
-
-    tcp_flags_str[0] = '\0';
-    for(int i=0; i<8; i++) {
-        tmp[0] = '\0';
-        if(flag_no[i] == 1) {
-            strcat(tmp, flags[i]);
-            strcat(tmp, " | ");
-            strcat(tcp_flags_str, tmp);
-        }
-    }
-
-    len = strlen(tcp_flags_str);
-    tcp_flags_str[len-3] = '\0';
-    return tcp_flags_str;
-}
 
 void print_data(const u_char *packet, int len) {
     unsigned int i, j;
@@ -112,26 +47,61 @@ void print_data(const u_char *packet, int len) {
 
 // http://kaspyx.kr/36 // ip checksum calc
 // http://www.onurmark.co.kr/?p=217
-unsigned short tcp_checksum(unsigned short *buf, int len)
-{
+void compute_tcp_checksum(struct iphdr *ip_header, unsigned short *tcp_header_and_data) {
     register unsigned long sum = 0;
+    unsigned short tcp_len = ntohs(ip_header->tot_len) - (ip_header->ihl << 2);
+    struct tcphdr *tcp_header = (struct tcphdr *)(tcp_header_and_data);
 
-    while(len--)
-        sum += *buf++;
+    // ip_header(pseudo header) checksum calc (level 1)
+    sum += (ip_header->saddr >> 16) & 0xFFFF;
+    sum += (ip_header->saddr) & 0xFFFF;
+    sum += (ip_header->daddr >> 16) & 0xFFFF;
+    sum += (ip_header->daddr) & 0xFFFF;
+    sum += htons(IPPROTO_TCP);
+    sum += htons(tcp_len);
 
-    sum = (sum >> 16) + (sum & 0xffff);
-    sum += (sum >> 16);
+    // tcp data and header checksum calc (level2)
+    tcp_header->check = 0;
+    while (tcp_len > 1) {
+        sum += * tcp_header_and_data++;
+        tcp_len -= 2;
+    }
 
-    return (unsigned short)(~sum);
+
+    if(tcp_len > 0)
+        sum += ((*tcp_header_and_data)&htons(0xFF00));
+    while (sum>>16)
+        sum = (sum & 0xffff) + (sum >> 16);
+
+    tcp_header->check = (unsigned short)~sum;
+}
+
+u_short ip_checksum( u_short len_ip_header, u_short * buff ) {
+        u_short word16;
+        u_int sum = 0;
+        u_short i;
+        // make 16 bit words out of every two adjacent 8 bit words in the packet
+        // and add them up
+        for( i = 0; i < len_ip_header; i = i+2 ) {
+                word16 = ( ( buff[i]<<8) & 0xFF00 )+( buff[i+1] & 0xFF );
+                sum = sum + (u_int) word16;
+        }
+        // take only 16 bits out of the 32 bit sum and add up the carries
+        while( sum >> 16 )
+            sum = ( sum & 0xFFFF ) + ( sum >> 16 );
+        // one's complement the result
+        sum = ~sum;
+
+        return ((u_short) sum);
 }
 
 void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
     static int count = 1;
     struct libnet_ethernet_hdr *eth_header;     // struct ether_header 도 가능
     struct libnet_ipv4_hdr *ip_header;          // struct ip 도 가능
+    u_short ip_header_bak[20];
+    char *ip_header_ptr;
     struct libnet_tcp_hdr *tcp_header;          // struct tcphdr 도 가능
-    struct pseudohdr pseudo_hdr;
-    //u_char copy_packet[73];
     u_char copy_packet[1500];
     u_char *copy_packet_p;
 
@@ -147,10 +117,6 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
     // get get ethernet header -> protocol type
     etherh_protocoltype = ntohs(eth_header->ether_type);
 
-    printf("\n\n[Ethernet Packet info]\n");
-    printf("   [*] Source MAC address : %s\n", ether_ntoa((const ether_addr *)eth_header->ether_shost));
-    printf("   [*] Destination MAC address : %s\n", ether_ntoa((const ether_addr *)eth_header->ether_dhost));
-
     if(etherh_protocoltype == ETHERTYPE_IP) {
         // move to offset
         copy_packet_p += sizeof(struct libnet_ethernet_hdr);
@@ -159,59 +125,34 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
         ip_header = (struct libnet_ipv4_hdr *)copy_packet_p;
         iph_protocol = ip_header->ip_p;
 
-        printf("[IP Packet info]\n");
-        printf("   [*] IP packet header length : %d bytes (%d)\n", ip_header->ip_hl*4, ip_header->ip_hl);
-        printf("   [*] Next Layer Protocol Type : %s(0x%x)\n", get_protocol_str(iph_protocol), iph_protocol);
-        printf("   [*] Source IP : %s\n", inet_ntoa(ip_header->ip_src));
-        printf("   [*] Destination IP : %s\n", inet_ntoa(ip_header->ip_dst));
-
         // move to next header offset
-        //copy_packet_p += ip_header->ip_hl * 4;
         copy_packet_p += sizeof(struct libnet_ipv4_hdr);
         packet += sizeof(struct libnet_ipv4_hdr);
         if(iph_protocol == IPPROTO_TCP) {
             // get tcp header
             tcp_header = (struct libnet_tcp_hdr *)copy_packet_p;
 
-            printf("[TCP Packet info]\n");
-            printf("   [*] Control Flag : %s\b\b\b\n", get_tcp_flag_str(tcp_header->th_flags));
-            printf("   [*] Source Port : %d\n", ntohs(tcp_header->th_sport));
-            printf("   [*] Destination Port : %d\n", ntohs(tcp_header->th_dport));
-            printf("   [*] Data(HEX, ASCII)\n");
-            //print_data(packet, length);
-
-            //copy_packet_p += sizeof(struct libnet_tcp_hdr);
-            //packet += sizeof(struct libnet_tcp_hdr);
             copy_packet_p += (tcp_header->th_off)*4;
             packet += (tcp_header->th_off)*4;
             if(ntohs(tcp_header->th_dport) == 80) {
-                print_data(packet, length);
                 if(strstr((char *)packet, "GET") != NULL) {
                     tcp_data_len = ntohs(ip_header->ip_len) - (ip_header->ip_hl + tcp_header->th_off)*4;    // tcp_data_len = [IP Total Length] - ([IP IHL] + [TCP Data offset])*4)
-                    printf("tcp data len : %d\n", tcp_data_len);
-                    printf("tcp_header->th_seq :%x\n", tcp_header->th_seq);
+                    //printf("tcp data len : %d\n", tcp_data_len);
+                    //printf("tcp_header->th_seq :%x\n", tcp_header->th_seq);
 
                     int redir_tcp_data_len;
                     if(menu == 2)
-                        redir_tcp_data_len = strlen("blocked");
+                        redir_tcp_data_len = strlen("blocked!");
                     else if(menu == 3)
-                        redir_tcp_data_len = strlen("HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n");
+                        redir_tcp_data_len = strlen("HTTP/1.1 302 Found\r\nLocation: http://gilgil.net/\r\n");
 
                     tcp_header->th_flags = TH_FIN | TH_ACK;
                     //tcp_header->th_flags = TH_RST;
                     int iphdr_total_len = sizeof(struct libnet_ipv4_hdr) + tcp_header->th_off*4 + redir_tcp_data_len;
                     ip_header->ip_len = htons(iphdr_total_len);
+                    ip_header->ip_sum = 0;
                     if(menu == 1) {
                         tcp_header->th_seq = htonl(ntohl(tcp_header->th_seq) + tcp_data_len);
-                        //tcp_header->th_flags = TH_FIN | TH_ACK; // FIN | ACK
-                        //tcp_header->th_flags = TH_RST;
-                        //int iphdr_total_len = sizeof(struct libnet_ipv4_hdr) + tcp_header->th_off*4 + 7;
-                        //ip_header->ip_len = htons(iphdr_total_len);
-                        //pseudo_hdr.ip_src.s_addr = ip_header->ip_src.s_addr;
-                        //pseudo_hdr.ip_dst.s_addr = ip_header->ip_dst.s_addr;
-                        //pseudo_hdr.ip_p = ip_header->ip_p;
-                        //pseudo_hdr.length = htons(sizeof(struct libnet_tcp_hdr));
-                        //memcpy(&pseudo_hdr.tcpheader, tcp_header, sizeof(struct libnet_tcp_hdr));
                     } else if(menu == 2 || menu == 3) {
                         uint8_t  tmp_mac[ETHER_ADDR_LEN];
                         struct in_addr tmp_ip;
@@ -229,41 +170,32 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
                         tmp_seq = tcp_header->th_seq;
                         tcp_header->th_seq = tcp_header->th_ack;
                         tcp_header->th_ack = htonl(ntohl(tmp_seq) + tcp_data_len);
-                    }
-                    pseudo_hdr.ip_src.s_addr = ip_header->ip_src.s_addr;
-                    pseudo_hdr.ip_dst.s_addr = ip_header->ip_dst.s_addr;
-                    pseudo_hdr.ip_p = ip_header->ip_p;
-                    pseudo_hdr.length = htons(tcp_header->th_off);
-                    memcpy(&pseudo_hdr.tcpheader, tcp_header, sizeof(struct libnet_tcp_hdr));
+                        tcp_header->th_sum = htons(0x00);
 
-
-                    // calculate TCP checksum
-                    tcp_header->th_sum = tcp_checksum((unsigned short *)&pseudo_hdr, sizeof(struct pseudohdr) / sizeof(unsigned short));
-                    if(menu == 2) {
-                        memcpy(copy_packet_p, "blocked", strlen("blocked"));
-                    } else if(menu == 3) {
-                        memcpy(copy_packet_p, "HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n", strlen("HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n"));
                     }
+                    if(menu == 2)
+                        memcpy(copy_packet_p, "blocked!", strlen("blocked!"));
+                    else if(menu == 3)
+                        memcpy(copy_packet_p, "HTTP/1.1 302 Found\r\nLocation: http://gilgil.net/\r\n", strlen("HTTP/1.1 302 Found\r\nLocation: http://gilgil.net/\r\n"));
+
+                    // Caculate IP Checksum
+                    ip_header_ptr = (char *)ip_header;
+                    for(int i=0; i<sizeof(struct libnet_ipv4_hdr); i++)
+                        ip_header_bak[i] = *(unsigned char *)ip_header_ptr++;
+                    ip_header->ip_sum = htons(ip_checksum(20, ip_header_bak));
+
+                    // Calculate TCP Checksum
+                    compute_tcp_checksum((struct iphdr *)ip_header, (unsigned short *)tcp_header);
                     copy_packet_p = copy_packet_p - sizeof(struct libnet_ethernet_hdr) - sizeof(struct libnet_ipv4_hdr) - (tcp_header->th_off*4);
-                    print_data(copy_packet_p, iphdr_total_len+14);
+                    //print_data(copy_packet_p, iphdr_total_len+14);
+                    printf(" - Url Detect~! Block Packet Send...\n");
                     if (pcap_sendpacket((pcap_t *)pcd, copy_packet_p, iphdr_total_len+14) != 0)
                     { fprintf(stderr,"\nError sending the packet(VtoG): %s\n", pcap_geterr((pcap_t *)pcd)); }
                 }
             }
         }
-        else {
-            printf("[Unknown Packet]\n");
-            printf("   [*] Not TCP Protocol ~~!\n");
-            printf("   [*]    // TODO : other protocol handle");
-        }
     }
-    // IP 패킷이 아니라면
-    else {
-        printf("[Unknown Packet]\n");
-        printf("   [*] Not IP Protocol ~~!\n");
-        printf("   [*]    // TODO : other protocol handle");
-    }
-    printf("\n");
+    //printf("\n");
 }
 
 int main(int argc, char **argv) {
@@ -310,8 +242,9 @@ int main(int argc, char **argv) {
         printf("[*] Please Select Level~!!\n");
         printf("   1) FORWARD FIN (blocked)\n");
         printf("   2) BACKWARD FIN (blocked)\n");
-        printf("   3) 302 redir FIN (blocked)\n");
+        printf("   3) 302 redir FIN (blocked)\n\n");
 
+        printf("   >> menu : ");
         scanf("%d", &menu);
 
         if((menu == 1) || (menu == 2) || (menu == 3)) break;
