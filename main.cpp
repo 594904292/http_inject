@@ -191,7 +191,12 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
                     printf("tcp data len : %d\n", tcp_data_len);
                     printf("tcp_header->th_seq :%x\n", tcp_header->th_seq);
 
-                    int redir_tcp_data_len = strlen("HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n");
+                    int redir_tcp_data_len;
+                    if(menu == 2)
+                        redir_tcp_data_len = strlen("HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n");
+                    else if(menu == 3)
+                        redir_tcp_data_len = strlen("blocked");
+
                     tcp_header->th_flags = TH_FIN | TH_ACK;
                     //tcp_header->th_flags = TH_RST;
                     int iphdr_total_len = sizeof(struct libnet_ipv4_hdr) + tcp_header->th_off*4 + redir_tcp_data_len;
@@ -222,13 +227,13 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
                         tcp_header->th_sport = tcp_header->th_dport;
                         tcp_header->th_dport = tmp_port;
                         tmp_seq = tcp_header->th_seq;
-                        tcp_header->th_seq = tcp_header->th_ack;
+                        tcp_header->th_seq = tcp_header->th_ack+1;
                         tcp_header->th_ack = htonl(ntohl(tmp_seq) + tcp_data_len);
                     }
                     pseudo_hdr.ip_src.s_addr = ip_header->ip_src.s_addr;
                     pseudo_hdr.ip_dst.s_addr = ip_header->ip_dst.s_addr;
                     pseudo_hdr.ip_p = ip_header->ip_p;
-                    pseudo_hdr.length = htons(sizeof(struct libnet_tcp_hdr));
+                    pseudo_hdr.length = htons(tcp_header->th_off);
                     memcpy(&pseudo_hdr.tcpheader, tcp_header, sizeof(struct libnet_tcp_hdr));
 
 
@@ -242,7 +247,7 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
                     copy_packet_p = copy_packet_p - sizeof(struct libnet_ethernet_hdr) - sizeof(struct libnet_ipv4_hdr) - (tcp_header->th_off*4);
                     print_data(copy_packet_p, iphdr_total_len+14);
                     if (pcap_sendpacket((pcap_t *)pcd, copy_packet_p, iphdr_total_len+14) != 0)
-                    { fprintf(stderr,"\nError sending the packet(VtoG): %s\n", pcap_geterr((pcap_t *)pcd));}
+                    { fprintf(stderr,"\nError sending the packet(VtoG): %s\n", pcap_geterr((pcap_t *)pcd)); }
                 }
             }
         }
