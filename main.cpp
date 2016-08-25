@@ -193,9 +193,9 @@ void packetfilter_callback(u_char *pcd, const struct pcap_pkthdr *pkthdr, const 
 
                     int redir_tcp_data_len;
                     if(menu == 2)
-                        redir_tcp_data_len = strlen("HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n");
-                    else if(menu == 3)
                         redir_tcp_data_len = strlen("blocked");
+                    else if(menu == 3)
+                        redir_tcp_data_len = strlen("HTTP/1.1 302 Found\r\nLocation: http://warning.or.kr/\r\n");
 
                     tcp_header->th_flags = TH_FIN | TH_ACK;
                     //tcp_header->th_flags = TH_RST;
